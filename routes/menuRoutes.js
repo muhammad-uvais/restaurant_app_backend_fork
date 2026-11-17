@@ -6,6 +6,7 @@ const upload = require("../middleware/multer");
 const { authenticate } = require("../middleware/authMiddleware");
 const getTenant = require("../middleware/tenantMiddleware");
 const { authorizeRoles } = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/requirePermission");
 
 /**
  * ===========================
@@ -31,6 +32,7 @@ router.get(
   "/",
   authenticate,
   authorizeRoles("admin", "staff"),
+  requirePermission("menu.view"),
   menuController.getMenuItems
 );
 
@@ -40,6 +42,7 @@ router.post(
   authenticate,
   upload.single("file"),
   authorizeRoles("admin"),
+  requirePermission("menu.create"),
   menuController.addMenuItems
 );
 
@@ -48,6 +51,7 @@ router.post(
   "/reorder-menuitems",
   authenticate,
   authorizeRoles("admin"),
+  requirePermission("menu.reorder"),
   menuController.reorderMenuItems
 );
 
@@ -57,6 +61,7 @@ router.put(
   authenticate,
   upload.single("file"),
   authorizeRoles("admin"),
+  requirePermission("menu.edit"),
   menuController.updateMenuItem
 );
 
@@ -65,6 +70,7 @@ router.delete(
   "/:id",
   authenticate,
   authorizeRoles("admin"),
+  requirePermission("menu.delete"),
   menuController.deleteMenuItem
 );
 

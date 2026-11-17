@@ -6,6 +6,8 @@ const orderEmitter = require("../events/orderEvents");
 const occupancyEmitter = require("../events/occupancyEvents");
 const calculateDiscountedPrice = require("../utils/calculateDiscountedPrice");
 const normalizeDiscount = require("../utils/normalizeDiscount");
+const { getTenantAdminId } = require("../services/entitlement.service");
+const { requireOne } = require("../services/ability.service");
 
 
 // Create order (Public)
@@ -39,6 +41,29 @@ exports.createOrder = async (req, res) => {
 
     if (!restaurant) {
       return res.status(404).json({ message: "Restaurant not found" });
+    }
+
+    const { features: entitled } = await getEntitlements(tenantAdminId);
+
+    if (!entitled.has("order.self_order")) {
+      return res.status(403).json({
+        code: "FEATURE_NOT_IN_PLAN",
+        message: "Self-ordering is not available for this restaurant.",
+      });
+    }
+
+    if (orderType === "Take Away" && !entitled.has("order.takeaway")) {
+      return res.status(403).json({
+        code: "FEATURE_NOT_IN_PLAN",
+        message: "Takeaway orders are not available for this restaurant.",
+      });
+    }
+
+    if (orderType === "Delivery" && !entitled.has("order.delivery")) {
+      return res.status(403).json({
+        code: "FEATURE_NOT_IN_PLAN",
+        message: "Delivery orders are not available for this restaurant.",
+      });
     }
 
     let resolvedUnit = null;
@@ -477,6 +502,16 @@ exports.createOrderByAdminOrStaff = async (req, res) => {
 
     const isDineIn = orderType === "Eat Here";
 
+    if (orderType === "Take Away") {
+      const denial = await requireOne(req.user, "order.takeaway");
+      if (denial) return res.status(403).json(denial);
+    }
+
+    if (orderType === "Delivery") {
+      const denial = await requireOne(req.user, "order.delivery");
+      if (denial) return res.status(403).json(denial);
+    }
+
     let resolvedUnit = null;
     let resolvedSection = null;
     let existingOrder = null;
@@ -816,6 +851,36 @@ exports.getAllOrders = async (req, res) => {
   }
 };
 
+// controllers/orderController.js — add near getAllOrders
+exports.getKitchenQueue = async (req, res) => {
+  try {
+    const ownerAdminId = getTenantAdminId(req.user);
+    const { page = 1, limit = 100 } = req.query;
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const baseFilter = { user: ownerAdminId, deleted: false };
+
+    const [pending, preparing, ready, totalActive, totalReady] = await Promise.all([
+      Order.find({ ...baseFilter, status: "pending" }).sort({ createdAt: 1 }).skip(skip).limit(Number(limit)),
+      Order.find({ ...baseFilter, status: "preparing" }).sort({ createdAt: 1 }).skip(skip).limit(Number(limit)),
+      Order.find({ ...baseFilter, status: "ready" }).sort({ createdAt: 1 }).skip(skip).limit(Number(limit)),
+      Order.countDocuments({ ...baseFilter, status: { $in: ["pending", "preparing"] } }),
+      Order.countDocuments({ ...baseFilter, status: "ready" }),
+    ]);
+
+    res.status(200).json({
+      message: "Kitchen queue fetched successfully",
+      counts: { active: totalActive, ready: totalReady },
+      orders: { pending, preparing, ready },
+      page: Number(page),
+      limit: Number(limit),
+    });
+  } catch (error) {
+    console.error("Get kitchen queue error:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 // Update order
 exports.updateOrder = async (req, res) => {
   try {
@@ -834,7 +899,7 @@ exports.updateOrder = async (req, res) => {
     };
 
     //FETCH ORDER
-    const existingOrder = await Order.findById(orderId);
+    const existingOrder = await Order.findById({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!existingOrder) {
       return res.status(404).json({ message: "Order not found" });
@@ -846,6 +911,9 @@ exports.updateOrder = async (req, res) => {
         message: `Cannot modify ${existingOrder.status} order`,
       });
     }
+
+    const denial = await requireOne(req.user, updates.status === "cancelled" ? "order.cancel" : "order.edit");
+    if (denial) return res.status(403).json(denial);
 
     const updatePayload = {};
     let occupancyChanged = false;
@@ -1293,8 +1361,8 @@ exports.updateOrder = async (req, res) => {
     }
 
     // UPDATE
-    const updatedOrder = await Order.findByIdAndUpdate(
-      orderId,
+    const updatedOrder = await Order.findOneAndUpdate(
+      { _id: orderId, user: getTenantAdminId(req.user) },
       { $set: updatePayload },
       { new: true }
     );
@@ -1333,7 +1401,7 @@ exports.toggleItemReady = async (req, res) => {
     const { orderId, itemId } = req.params;
 
     // Get current order
-    const order = await Order.findById(orderId);
+    const order = await Order.findById({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({
@@ -1363,6 +1431,7 @@ exports.toggleItemReady = async (req, res) => {
     let updatedOrder = await Order.findOneAndUpdate(
       {
         _id: orderId,
+        user: getTenantAdminId(req.user),
         "items._id": itemId,
       },
       {
@@ -1429,7 +1498,7 @@ exports.deleteOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({
@@ -1524,7 +1593,7 @@ exports.billOrder = async (req, res) => {
       return res.status(400).json({ message: "orderId is required" });
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -1679,7 +1748,7 @@ exports.moveOrder = async (req, res) => {
     const { orderId } = req.params;
     const { unitId } = req.body;
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById({ _id: orderId, user: getTenantAdminId(req.user) });
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
@@ -1887,12 +1956,21 @@ exports.payOrder = async (req, res) => {
     }
 
     // FETCH ORDER
-    const order = await Order.findById(orderId);
+    const order = await Order.findById({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({
         message: "Order not found",
       });
+    }
+
+    const neededPerms = new Set(["payment.collect"]);
+    if (paymentMethods.length > 1) neededPerms.add("payment.split");
+    if (settlementAmount !== undefined) neededPerms.add("payment.settle");
+
+    for (const key of neededPerms) {
+      const denial = await requireOne(req.user, key);
+      if (denial) return res.status(403).json(denial);
     }
 
     // PREVENT DOUBLE PAYMENT
@@ -2078,7 +2156,7 @@ exports.addAdvancePayment = async (req, res) => {
       });
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findOne({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({
@@ -2173,7 +2251,7 @@ exports.editAdvancePayment = async (req, res) => {
       });
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findOne({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({
@@ -2263,7 +2341,7 @@ exports.deleteAdvancePayment = async (req, res) => {
       });
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findOne({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({
@@ -2334,7 +2412,7 @@ exports.cancelRoomBooking = async (req, res) => {
   try {
     const { orderId } = req.params;
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById({ _id: orderId, user: getTenantAdminId(req.user) });
 
     if (!order) {
       return res.status(404).json({

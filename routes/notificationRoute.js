@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { addClient } = require('../utils/sseManager');
 const { authenticate } = require('../middleware/authMiddleware');
+const { getAccess } = require('../services/ability.service'); // add this import
 
 router.get('/notifications', async (req, res) => {
   try {
@@ -12,6 +13,17 @@ router.get('/notifications', async (req, res) => {
           resolve();
         });
       });
+
+      // NEW: gate admin/staff access behind notification.view
+      if (["admin", "staff"].includes(req.user.role)) {
+        const { entitled, allowed } = await getAccess(req.user);
+        if (!entitled.has("notification.view")) {
+          return res.status(403).json({ code: "FEATURE_NOT_IN_PLAN", message: "This feature is not part of your plan." });
+        }
+        if (!allowed.has("notification.view")) {
+          return res.status(403).json({ code: "PERMISSION_DENIED", message: "You do not have permission for this action." });
+        }
+      }
     } else if (req.query.fingerPrint) {
       req.user = { role: "guest" };
     } else {

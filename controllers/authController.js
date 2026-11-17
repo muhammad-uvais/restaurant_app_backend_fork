@@ -3,6 +3,17 @@ const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const Restaurant = require("../models/Restaurant");
 const generateToken = require("../utils/generateToken");
+const Plan = require("../models/Plan");
+const Entitlement = require("../models/Entitlement");
+const Role = require("../models/Role");
+const { legacyStaffKeys } = require("../config/catalog");
+const mongoose = require("mongoose")
+const { getAccess } = require("../services/ability.service");
+
+const EDITABLE_FIELDS = {
+  staff: ["name", "email", "password", "roleId"],
+  admin: ["name", "email", "password", "restaurantName", "phoneNumber"],
+};
 
 // Register User
 exports.registerUser = async (req, res) => {
@@ -23,7 +34,7 @@ exports.registerUser = async (req, res) => {
 
     const existingUser = await User.findOne({
       email,
-      isDeleted: false,
+      isDeleted: { $ne: true },
     });
     if (existingUser) {
       return res.status(400).json({ message: "Email already exists." });
@@ -60,6 +71,11 @@ exports.registerUser = async (req, res) => {
         admin.restaurantId = restaurant._id;
         await admin.save();
 
+        const legacyPlan = await Plan.findOne({ name: "Legacy" });
+        if (legacyPlan) {
+          await Entitlement.create({ admin: admin._id, plan: legacyPlan._id });
+        }
+
         const token = generateToken(admin._id);
 
         return res.status(201).json({
@@ -88,10 +104,26 @@ exports.registerUser = async (req, res) => {
             .json({ message: "Admin does not have a restaurant assigned." });
         }
 
+        let staffRole;
+        if (req.body.roleId) {
+          if (!mongoose.isValidObjectId(req.body.roleId)) {
+            return res.status(400).json({ message: "Invalid roleId" });
+          }
+          staffRole = await Role.findOne({ _id: req.body.roleId, admin: creator._id });
+          if (!staffRole) return res.status(400).json({ message: "Role not found for this restaurant" });
+        } else {
+          staffRole = await Role.findOneAndUpdate(
+            { admin: creator._id, name: "Staff (legacy)" },
+            { $setOnInsert: { permissions: legacyStaffKeys() } },
+            { upsert: true, new: true }
+          );
+        }
+
         const staff = await User.create({
           ...baseData,
           restaurantId: admin.restaurantId._id,
           createdBy: creator._id,
+          roleId: staffRole._id,
         });
 
         const token = generateToken(staff._id);
@@ -169,7 +201,7 @@ exports.loginUser = async (req, res) => {
     // Fetch user with restaurant info if exists
     const user = await User.findOne({
       email,
-      isDeleted: false,
+      isDeleted: { $ne: true },
     })
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: "Invalid credentials" });
@@ -209,22 +241,25 @@ exports.loginUser = async (req, res) => {
 
 exports.updateUser = async (req, res) => {
   const { id } = req.params;
-
-  const updateData = {
-    ...req.body,
-    updatedAt: new Date()
-  };
-
   const currentUser = req.user;
 
   try {
-
     const userToUpdate = await User.findById(id);
 
     if (!userToUpdate) {
       return res.status(404).json({
         message: "User not found"
       });
+    }
+
+    if (userToUpdate.role === "staff" && currentUser.role === "admin") {
+      const { entitled, allowed } = await getAccess(currentUser);
+      if (!entitled.has("staff.edit")) {
+        return res.status(403).json({ code: "FEATURE_NOT_IN_PLAN", message: "This feature is not part of your plan." });
+      }
+      if (!allowed.has("staff.edit")) {
+        return res.status(403).json({ code: "PERMISSION_DENIED", message: "You do not have permission for this action." });
+      }
     }
 
     if (userToUpdate.isDeleted) {
@@ -248,8 +283,31 @@ exports.updateUser = async (req, res) => {
       });
     }
 
-    if (updateData.role) {
-      delete updateData.role;
+    // if (updateData.role) {
+    //   delete updateData.role;
+    // }
+
+    // NEW: an admin may only edit staff that they created
+    if (
+      currentUser.role === "admin" &&
+      String(userToUpdate.createdBy) !== String(currentUser._id)
+    ) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // NEW: build updateData from the allowed list only
+    const updateData = { updatedAt: new Date() };
+    (EDITABLE_FIELDS[userToUpdate.role] || []).forEach((field) => {
+      if (req.body[field] !== undefined) updateData[field] = req.body[field];
+    });
+
+    if (updateData.roleId !== undefined) {
+      if (!mongoose.isValidObjectId(updateData.roleId)) {
+        return res.status(400).json({ message: "Invalid roleId" });
+      }
+      const roleOwner = userToUpdate.role === "staff" ? userToUpdate.createdBy : currentUser._id;
+      const role = await Role.findOne({ _id: updateData.roleId, admin: roleOwner });
+      if (!role) return res.status(400).json({ message: "Role not found for this restaurant" });
     }
 
     if (updateData.password) {
@@ -456,7 +514,7 @@ exports.updateUser = async (req, res) => {
 // Get all admins (superadmin only)
 exports.getAllAdmins = async (req, res) => {
   try {
-    const admins = await User.find({ role: "admin", isDeleted: false }).lean();
+    const admins = await User.find({ role: "admin", isDeleted: { $ne: true } }).lean();
 
     res.status(200).json({
       message: "Admins fetched successfully",
@@ -472,7 +530,7 @@ exports.getAllAdmins = async (req, res) => {
 // Get all staff (superadmin only)
 exports.getAllStaff = async (req, res) => {
   try {
-    const staff = await User.find({ role: "staff", isDeleted: false }).lean();
+    const staff = await User.find({ role: "staff", isDeleted: { $ne: true } }).lean();
     res.status(200).json({
       message: "Staff fetched successfully",
       count: staff.length,
@@ -495,7 +553,7 @@ exports.getAllStaffByAdmin = async (req, res) => {
   try {
     const staff = await User.find({
       role: "staff",
-      isDeleted: false,
+      isDeleted: { $ne: true },
       createdBy: creator._id,
     }).lean();
 
@@ -527,6 +585,16 @@ exports.deleteUser = async (req, res) => {
       return res.status(400).json({ message: "User is already deleted" });
     }
 
+    if (userToDelete.role === "staff" && currentUser.role === "admin") {
+      const { entitled, allowed } = await getAccess(currentUser);
+      if (!entitled.has("staff.delete")) {
+        return res.status(403).json({ code: "FEATURE_NOT_IN_PLAN", message: "This feature is not part of your plan." });
+      }
+      if (!allowed.has("staff.delete")) {
+        return res.status(403).json({ code: "PERMISSION_DENIED", message: "You do not have permission for this action." });
+      }
+    }
+
 
     // Prevent deleting superadmin
     if (userToDelete.role === 'superadmin') {
@@ -549,6 +617,13 @@ exports.deleteUser = async (req, res) => {
           message: "Only superadmin or admin can delete staff users"
         });
       }
+    }
+
+    if (
+      currentUser.role === "admin" &&
+      String(userToDelete.createdBy) !== String(currentUser._id)
+    ) {
+      return res.status(404).json({ message: "User not found" });
     }
 
     // Prevent self-deletion

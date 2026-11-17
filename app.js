@@ -13,6 +13,9 @@ const authRoutes = require("./routes/authRoutes");
 const restaurantRoutes = require("./routes/restaurantRoutes")
 const analyticsRoutes = require("./routes/analyticsRoutes")
 const notificationRoute = require("./routes/notificationRoute")
+const accessRoutes = require("./routes/accessRoutes")
+const superadminRoutes = require("./routes/superadminRoutes")
+const roleRoutes = require("./routes/roleRoutes")
 
 // Mount routes
 app.use("/api/menu", menuRoutes);
@@ -20,6 +23,9 @@ app.use("/api/order", orderRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/restaurant", restaurantRoutes)
 app.use("/api/analytics", analyticsRoutes)
-app.use('/api', notificationRoute);
+app.use("/api", notificationRoute);
+app.use("/api/access", accessRoutes)
+app.use("/api/superadmin", superadminRoutes)
+app.use("/api/roles", roleRoutes)
 
 module.exports = app;

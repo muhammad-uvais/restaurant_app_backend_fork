@@ -6,6 +6,7 @@ const { authenticate } = require("../middleware/authMiddleware");
 const getTenant = require("../middleware/tenantMiddleware");
 const { authorizeRoles } = require("../middleware/roleMiddleware");
 const adminOrStaff = authorizeRoles("admin", "staff");
+const { requirePermission } = require("../middleware/requirePermission");
 
 // Public routes (no auth required) 
 
@@ -18,42 +19,45 @@ router.get("/fingerprint", getTenant, orderController.getLatestOrdersByFingerPri
 // Protected routes (authentication required)
 
 // Create an order on behalf of a client (admin / staff only)
-router.post("/protected", authenticate, adminOrStaff, orderController.createOrderByAdminOrStaff);
+router.post("/protected", authenticate, adminOrStaff, requirePermission("order.create"), orderController.createOrderByAdminOrStaff);
 
 // Retrieve all orders across the system
-router.get("/", authenticate, adminOrStaff, orderController.getAllOrders);
+router.get("/", authenticate, adminOrStaff, requirePermission("order.view"), orderController.getAllOrders);
+
+//kitchen queue
+router.get("/kitchen/queue", authenticate, adminOrStaff, requirePermission("kds.view"), orderController.getKitchenQueue);
 
 // Get single order by ID (admin/staff)
-router.get("/:orderId", authenticate, adminOrStaff, orderController.getOrderById);
+router.get("/:orderId", authenticate, adminOrStaff, requirePermission("order.view"), orderController.getOrderById);
 
 // Bill a specific order (table or room)
-router.post("/:orderId/bill", authenticate, adminOrStaff, orderController.billOrder);
+router.post("/:orderId/bill", authenticate, adminOrStaff, requirePermission("order.bill"), orderController.billOrder);
 
 // Payment for a specific order (table or room)
 router.post("/:orderId/pay", authenticate, adminOrStaff, orderController.payOrder);
 
 // Move an order to a different table / room (admin / staff only)
-router.post("/:orderId/move", authenticate, adminOrStaff, orderController.moveOrder);
+router.post("/:orderId/move", authenticate, adminOrStaff, requirePermission("order.move"), orderController.moveOrder);
 
 // Update order details (admin / staff only)
 router.put("/:orderId", authenticate, adminOrStaff, orderController.updateOrder);
 
 // Cancel room bookinh (admin / staff only)
-router.post("/:orderId/cancel-booking", authenticate, adminOrStaff, orderController.cancelRoomBooking)
+router.post("/:orderId/cancel-booking", authenticate, adminOrStaff, requirePermission("order.cancel_room_booking"), orderController.cancelRoomBooking)
 
 // Add advance payment
-router.post("/:orderId/advance-payment", authenticate, adminOrStaff, orderController.addAdvancePayment);
+router.post("/:orderId/advance-payment", authenticate, requirePermission("payment.advance.create"), orderController.addAdvancePayment);
 
 // Edit advance payment
-router.patch("/:orderId/advance-payment/:paymentId", authenticate, adminOrStaff, orderController.editAdvancePayment);
+router.patch("/:orderId/advance-payment/:paymentId", authenticate, requirePermission("payment.advance.edit"), orderController.editAdvancePayment);
 
 // Delete advance payment
-router.delete("/:orderId/advance-payment/:paymentId", authenticate, adminOrStaff, orderController.deleteAdvancePayment);
+router.delete("/:orderId/advance-payment/:paymentId", authenticate, requirePermission("payment.advance.delete"), orderController.deleteAdvancePayment);
 
 // Toggle the ready-state of a single item within an order
-router.patch("/:orderId/items/:itemId/toggle-ready", authenticate, adminOrStaff, orderController.toggleItemReady);
+router.patch("/:orderId/items/:itemId/toggle-ready", authenticate, adminOrStaff, requirePermission("kds.item_ready"), orderController.toggleItemReady);
 
 // Cancel an order (admin / staff only)
-router.delete("/:orderId", authenticate, adminOrStaff, orderController.deleteOrder);
+router.delete("/:orderId", authenticate, adminOrStaff, requirePermission("order.delete"), orderController.deleteOrder);
 
 module.exports = router;

@@ -1,9 +1,11 @@
 const Order = require("../models/Order");
+const { getTenantAdminId } = require("../services/entitlement.service");
 
 // Get Revenue Details
 exports.getRestaurantInsights = async (req, res) => {
   try {
-    const user = req.user;
+    // const user = req.user;
+    const ownerAdminId = getTenantAdminId(req.user);
     const { from, to, range } = req.query;
 
     const now = new Date();
@@ -83,7 +85,7 @@ exports.getRestaurantInsights = async (req, res) => {
     const insights = await Order.aggregate([
       {
         $match: {
-          user: user._id,
+          user: ownerAdminId,
           status: "completed",
           deleted: false,
           completedAt: {
@@ -203,7 +205,8 @@ exports.getRestaurantInsights = async (req, res) => {
 // Get Top Selling Products
 exports.getTopSellingProducts = async (req, res) => {
   try {
-    const user = req.user; // from JWT auth
+    // const user = req.user;
+    const ownerAdminId = getTenantAdminId(req.user);
     const { from, to, range } = req.query;
 
     const now = new Date();
@@ -247,7 +250,7 @@ exports.getTopSellingProducts = async (req, res) => {
     const pipeline = [
       {
         $match: {
-          user: user._id,
+          user: ownerAdminId,
           status: "completed",
           createdAt: { $gte: fromDate, $lte: toDate },
         },
@@ -297,7 +300,8 @@ exports.getTopSellingProducts = async (req, res) => {
 // Get Top Selling Categories
 exports.getTopSellingCategories = async (req, res) => {
   try {
-    const user = req.user;
+    // const user = req.user;
+    const ownerAdminId = getTenantAdminId(req.user);
     const { from, to, range } = req.query;
 
     const now = new Date();
@@ -341,7 +345,7 @@ exports.getTopSellingCategories = async (req, res) => {
     const pipeline = [
       {
         $match: {
-          user: user._id,
+          user: ownerAdminId,
           status: "completed",
           createdAt: { $gte: fromDate, $lte: toDate },
         },

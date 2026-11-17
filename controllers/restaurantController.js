@@ -9,6 +9,8 @@ const path = require("path");
 const logoPath = path.join(__dirname, "../assets/logo.jpeg");
 const occupancyEmitter = require("../events/occupancyEvents");
 const restaurantEmitter = require("../events/restaurantEvents")
+const { getTenantAdminId } = require("../services/entitlement.service");
+const { getAccess, requireOne } = require("../services/ability.service");
 
 // QR Info
 exports.getQrInfo = async (req, res) => {
@@ -375,8 +377,8 @@ exports.updateRestaurantStatus = async (req, res) => {
 
 
     res.status(200).json({
-      message: `Restaurant is now ${isOpen ? "open" : "closed"}.`,
-      restaurant,
+      message: `Restaurant is now ${isOpen ? "open" : "closed"}.`
+      // restaurant,
     });
   } catch (err) {
     console.error("Update restaurant status error:", err);
@@ -667,6 +669,9 @@ exports.createSectionsAndUnits = async (req, res) => {
       });
     }
 
+    const denial = await requireOne(req.user, type === "ROOM" ? "room.create" : "table.create");
+    if (denial) return res.status(403).json(denial);
+
     if (!Array.isArray(units) || units.length === 0) {
       return res.status(400).json({
         message: "units array is required",
@@ -727,6 +732,33 @@ exports.createSectionsAndUnits = async (req, res) => {
         });
       }
 
+      // Validate room pricing configuration
+      if (type === "ROOM") {
+        const roomCategory = u.roomCategory;
+
+        if (!roomCategory || !roomCategory.name?.trim()) {
+          return res.status(400).json({
+            message: `Room category name is required for ${u.name}`,
+          });
+        }
+
+        if (roomCategory.pricingModel !== "PER_NIGHT") {
+          return res.status(400).json({
+            message: `Invalid pricing model for ${u.name}. Only PER_NIGHT is supported.`,
+          });
+        }
+
+        const pricePerNight = Number(
+          roomCategory.priceConfig?.pricePerNight
+        );
+
+        if (!Number.isFinite(pricePerNight) || pricePerNight <= 0) {
+          return res.status(400).json({
+            message: `Valid pricePerNight is required for ${u.name}`,
+          });
+        }
+      }
+
       const unitId = new mongoose.Types.ObjectId();
 
       const qr = await generateAndUploadQR(
@@ -745,7 +777,15 @@ exports.createSectionsAndUnits = async (req, res) => {
 
         roomCategory:
           type === "ROOM"
-            ? u.roomCategory || null
+            ? {
+              name: u.roomCategory.name.trim(),
+              pricingModel: u.roomCategory.pricingModel,
+              priceConfig: {
+                pricePerNight: Number(
+                  u.roomCategory.priceConfig.pricePerNight
+                ),
+              },
+            }
             : undefined,
 
         occupancy: {
@@ -801,6 +841,31 @@ exports.updateSections = async (req, res) => {
       return res.status(404).json({
         message: "Restaurant not found",
       });
+    }
+
+    const findUnitType = (unitId) => {
+      for (const section of restaurant.sections) {
+        const unit = section.units.id(unitId);
+        if (unit) return unit.type;
+      }
+      return null;
+    };
+
+    const neededPerms = new Set();
+    if (roomUpdates.length) neededPerms.add("room.edit");
+    for (const u of unitUpdates) {
+      const t = findUnitType(u.unitId);
+      if (t) neededPerms.add(t === "ROOM" ? "room.edit" : "table.edit");
+    }
+    for (const s of sectionUpdates) {
+      const section = restaurant.sections.id(s.sectionId);
+      const t = section?.units?.[0]?.type;
+      if (t) neededPerms.add(t === "ROOM" ? "room.edit" : "table.edit");
+    }
+
+    for (const key of neededPerms) {
+      const denial = await requireOne(req.user, key);
+      if (denial) return res.status(403).json(denial);
     }
 
     // SECTION RENAME
@@ -936,6 +1001,12 @@ exports.deleteSection = async (req, res) => {
       });
     }
 
+    const sectionType = section.units?.[0]?.type;
+    if (sectionType) {
+      const denial = await requireOne(req.user, sectionType === "ROOM" ? "room.delete" : "table.delete");
+      if (denial) return res.status(403).json(denial);
+    }
+
     const activeUnits = section.units.filter(
       (unit) =>
         unit.status === "OCCUPIED" ||
@@ -1021,6 +1092,9 @@ exports.deleteUnit = async (req, res) => {
       });
     }
 
+    const denial = await requireOne(req.user, foundUnit.type === "ROOM" ? "room.delete" : "table.delete");
+    if (denial) return res.status(403).json(denial);
+
     if (
       foundUnit.status === "OCCUPIED" ||
       foundUnit.status === "BILLED"
@@ -1062,7 +1136,7 @@ exports.deleteUnit = async (req, res) => {
 // Create Room Booking
 exports.createRoomBooking = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const tenantAdminId = getTenantAdminId(req.user);
 
     const {
       unitId,
@@ -1098,7 +1172,7 @@ exports.createRoomBooking = async (req, res) => {
     }
 
     const restaurant = await Restaurant.findOne({
-      user: userId,
+      user: tenantAdminId,
       deleted: false,
     });
 
@@ -1150,9 +1224,9 @@ exports.createRoomBooking = async (req, res) => {
 
     // CREATE ORDER (ROOM BOOKING)
     const order = await Order.create({
-      user: userId,
-      createdBy: userId,
-      createdByRole: "admin",
+      user: tenantAdminId,
+      createdBy: req.user._id,
+      createdByRole: req.user.role,
 
       fingerPrint: null, // will be set on first food order
 
@@ -1283,41 +1357,55 @@ exports.getLiveOccupancy = async (req, res) => {
       });
     }
 
+    const { entitled, allowed } = await getAccess(req.user);
+    const canViewTable = entitled.has("table.view") && allowed.has("table.view");
+    const canViewRoom = entitled.has("room.view") && allowed.has("room.view");
+
+    if (!canViewTable && !canViewRoom) {
+      const missingFromPlan = !entitled.has("table.view") && !entitled.has("room.view");
+      return res.status(403).json({
+        code: missingFromPlan ? "FEATURE_NOT_IN_PLAN" : "PERMISSION_DENIED",
+        message: missingFromPlan ? "This feature is not part of your plan." : "You do not have permission for this action.",
+      });
+    }
+
     // FORMAT RESPONSE
     const sections = (restaurant.sections || []).map((section) => ({
       sectionId: section._id || null,
       name: section.name,
 
-      units: (section.units || []).map((unit) => ({
-        unitId: unit._id,
-        name: unit.name,
-        type: unit.type,
-        status: unit.status,
+      units: (section.units || [])
+        .filter((unit) => (unit.type === "ROOM" ? canViewRoom : canViewTable))
+        .map((unit) => ({
+          unitId: unit._id,
+          name: unit.name,
+          type: unit.type,
+          status: unit.status,
 
-        currentOrderId:
-          unit.currentOrderId || null,
+          currentOrderId:
+            unit.currentOrderId || null,
 
-        occupiedSince:
-          unit.occupancy?.checkInTime || null,
+          occupiedSince:
+            unit.occupancy?.checkInTime || null,
 
-        roomCategory:
-          unit.type === "ROOM"
-            ? {
-              name:
-                unit.roomCategory?.name || null,
+          roomCategory:
+            unit.type === "ROOM"
+              ? {
+                name:
+                  unit.roomCategory?.name || null,
 
-              pricingModel:
-                unit.roomCategory?.pricingModel ||
-                null,
+                pricingModel:
+                  unit.roomCategory?.pricingModel ||
+                  null,
 
-              pricePerNight:
-                unit.roomCategory?.priceConfig
-                  ?.pricePerNight || null,
-            }
-            : null,
+                pricePerNight:
+                  unit.roomCategory?.priceConfig
+                    ?.pricePerNight || null,
+              }
+              : null,
 
-        isActive: unit.isActive,
-      })),
+          isActive: unit.isActive,
+        })),
     }));
 
     return res.status(200).json({

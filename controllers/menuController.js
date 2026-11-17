@@ -6,6 +6,7 @@ const {
 } = require("../utils/cloudinary");
 const normalizeDiscount = require("../utils/normalizeDiscount");
 const mongoose = require("mongoose");
+const { getTenantAdminId } = require("../services/entitlement.service");
 
 // Get Menu details (Client, via tenant middleware)
 exports.getMenuByTenant = async (req, res) => {
@@ -58,7 +59,7 @@ exports.getMenuItems = async (req, res) => {
     }
 
     const filter = {
-      user: ownerAdminId, // 🔥 admin id ALWAYS
+      user: ownerAdminId, // admin id ALWAYS
       deleted: false,
     };
 
@@ -120,7 +121,7 @@ exports.addMenuItems = async (req, res) => {
       available,
       visibility: visibility || "PUBLIC",
       image,
-      user: req.user._id,
+      user: getTenantAdminId(req.user),
     };
 
     // ---- SINGLE ITEM ----
@@ -151,7 +152,6 @@ exports.addMenuItems = async (req, res) => {
     }
 
     // ---- COMBO ITEM ----
-    // ---- COMBO ITEM ----
     if (pricingType === "combo") {
       if (
         !comboPrice ||
@@ -164,9 +164,10 @@ exports.addMenuItems = async (req, res) => {
           .json({ error: "Combo price and comboItems required" });
       }
 
-      // 1️⃣ Fetch menu items for name snapshot
+      // Fetch menu items for name snapshot
       const menuItems = await MenuItem.find({
         _id: { $in: comboItems.map((i) => i.menuItemId) },
+        user: getTenantAdminId(req.user),
         deleted: false,
       });
 
@@ -224,7 +225,7 @@ exports.updateMenuItem = async (req, res) => {
     const body = req.body;
 
     // const item = await MenuItem.findById(id);
-    const item = await MenuItem.findOne({ _id: id }).lean();
+    const item = await MenuItem.findOne({ _id: id, user: getTenantAdminId(req.user) }).lean();
 
     if (!item) return res.status(404).json({ error: "Menu item not found" });
 
@@ -316,8 +317,8 @@ exports.updateMenuItem = async (req, res) => {
       ["price", "discount", "variantRates"].forEach((f) => (unset[f] = ""));
     }
 
-    const updatedItem = await MenuItem.findByIdAndUpdate(
-      id,
+    const updatedItem = await MenuItem.findOneAndUpdate(
+      { _id: id, user: getTenantAdminId(req.user) },
       {
         ...(Object.keys(update).length && { $set: update }),
         ...(Object.keys(unset).length && { $unset: unset }),
@@ -340,7 +341,7 @@ exports.deleteMenuItem = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const item = await MenuItem.findById(id);
+    const item = await MenuItem.findOne({ _id: id, user: getTenantAdminId(req.user) });
 
     if (!item) {
       return res.status(404).json({ message: "Menu item not found" });
@@ -361,7 +362,7 @@ exports.deleteMenuItem = async (req, res) => {
 exports.reorderMenuItems = async (req, res) => {
   try {
     const { orderedMenuItemIds } = req.body;
-    const userId = req.user._id;
+    const userId = getTenantAdminId(req.user);
 
     if (
       !Array.isArray(orderedMenuItemIds) ||

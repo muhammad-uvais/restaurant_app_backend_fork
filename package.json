@@ -1,7 +1,7 @@
 {
   "name": "tapnbite",
-  "version": "4.1.3 ",
-  "description": "Real Time Notification",
+  "version": "5.0",
+  "description": "Rbac",
   "main": "app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -11,6 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@casl/ability": "^7.0.2",
     "bcryptjs": "^3.0.2",
     "canvas": "^3.2.2",
     "cloudinary": "^2.7.0",

@@ -4,6 +4,7 @@ const router = express.Router();
 const authController = require("../controllers/authController")
 const { authenticate } = require("../middleware/authMiddleware");
 const { authorizeRoles } = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/requirePermission")
 
 // Public registration (Superadmin only once — or via DB manually)
 // router.post("/register", authController.registerUser); 
@@ -12,7 +13,7 @@ const { authorizeRoles } = require("../middleware/roleMiddleware");
 router.post("/register/admin", authenticate, authorizeRoles("superadmin"), authController.registerUser);
 
 // Only admin can create staff
-router.post("/register/staff", authenticate, authorizeRoles("admin"), authController.registerUser);
+router.post("/register/staff", authenticate, authorizeRoles("admin"), requirePermission("staff.create"), authController.registerUser);
 
 // Global login route (anyone)
 router.post("/login", authController.loginUser);
@@ -22,7 +23,7 @@ router.put("/:id", authenticate, authorizeRoles("superadmin","admin"), authContr
 
 router.get("/admins", authenticate, authorizeRoles("superadmin"), authController.getAllAdmins);
 router.get("/staff", authenticate, authorizeRoles("superadmin"), authController.getAllStaff);
-router.get("/staff/mine", authenticate, authorizeRoles("admin"), authController.getAllStaffByAdmin);
+router.get("/staff/mine", authenticate, authorizeRoles("admin"), requirePermission("staff.view"), authController.getAllStaffByAdmin);
 
 router.delete("/:id", authenticate, authorizeRoles('superadmin', 'admin'), authController.deleteUser);
 
